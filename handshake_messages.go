@@ -5,9 +5,14 @@
 package tls
 
 import (
+	"bytes"
+	"compress/zlib"
 	"fmt"
-	"golang.org/x/crypto/cryptobyte"
+	"io"
 	"strings"
+
+	"github.com/andybalholm/brotli"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 // The marshalingFunction type is an adapter to allow the use of ordinary
@@ -990,6 +995,84 @@ func (m *keyUpdateMsg) unmarshal(data []byte) bool {
 		return false
 	}
 	return true
+}
+
+// See https://tools.ietf.org/html/draft-ietf-tls-certificate-compression-10#section-4
+type compressedCertificateMsg struct {
+	raw                          []byte
+	algorithm                    CertCompressionAlgo
+	uncompressedLength           int
+	compressedCertificateMessage []byte
+}
+
+func (m *compressedCertificateMsg) marshal() []byte {
+	if m.raw != nil {
+		return m.raw
+	}
+
+	panic("Not implemented since it's not needed on a client")
+}
+
+func (m *compressedCertificateMsg) unmarshal(data []byte) bool {
+	*m = compressedCertificateMsg{raw: data}
+	s := cryptobyte.String(data)
+
+	var algorithm uint16
+	var length uint32
+	if !s.Skip(4) || // message type and uint24 length field
+		!s.ReadUint16(&algorithm) ||
+		!s.ReadUint24(&length) ||
+		!readUint24LengthPrefixed(&s, &m.compressedCertificateMessage) {
+		return false
+	}
+
+	m.algorithm = CertCompressionAlgo(algorithm)
+	m.uncompressedLength = int(length)
+
+	return true
+}
+
+func (m *compressedCertificateMsg) convertToCertificateMsgTLS13() (*certificateMsgTLS13, error) {
+	rawReader := bytes.NewReader(m.compressedCertificateMessage)
+
+	var compressedReader io.Reader
+	var err error
+	switch m.algorithm {
+	case CertCompressionZlib:
+		compressedReader, err = zlib.NewReader(rawReader)
+	case CertCompressionBrotli:
+		compressedReader = brotli.NewReader(rawReader)
+	default:
+		err = fmt.Errorf("utls: unsupported certificate compression algorithm: %+v", m.algorithm)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	rawTLS13Msg := bytes.NewBuffer(make([]byte, 0, m.uncompressedLength+4))
+
+	// Write the message header
+	rawTLS13Msg.WriteByte(typeCertificate)
+	rawTLS13Msg.WriteByte(byte(m.uncompressedLength >> 16))
+	rawTLS13Msg.WriteByte(byte(m.uncompressedLength >> 8))
+	rawTLS13Msg.WriteByte(byte(m.uncompressedLength >> 0))
+
+	bytesRead, err := rawTLS13Msg.ReadFrom(compressedReader)
+	if err != nil {
+		return nil, err
+	}
+
+	if bytesRead != int64(m.uncompressedLength) {
+		return nil, fmt.Errorf("utls: invalid certificate length: expected %v, got %v", m.uncompressedLength, bytesRead)
+	}
+
+	var tls13Msg certificateMsgTLS13
+	if !tls13Msg.unmarshal(rawTLS13Msg.Bytes()) {
+		return nil, fmt.Errorf("utls: failed to convert the compressed certificate to certificateMsgTLS13")
+	}
+
+	return &tls13Msg, nil
 }
 
 type newSessionTicketMsgTLS13 struct {
