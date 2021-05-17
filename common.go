@@ -856,6 +856,20 @@ func (c *Config) curvePreferences() []CurveID {
 	return c.CurvePreferences
 }
 
+func (c *Config) getFirstNonGreaseCurve() CurveID {
+	if c == nil || len(c.CurvePreferences) == 0 {
+		return defaultCurvePreferences[0]
+	}
+
+	for _, curve := range c.CurvePreferences {
+		if !isGREASECurve(curve) {
+			return curve
+		}
+	}
+
+	return c.CurvePreferences[0]
+}
+
 // mutualVersion returns the protocol version to use given the advertised
 // versions of the peer. Priority is given to the peer preference order.
 func (c *Config) mutualVersion(isClient bool, peerVersions []uint16) (uint16, bool) {

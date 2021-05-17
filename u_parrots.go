@@ -662,6 +662,9 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 					ext.KeyShares[i].Group = CurveID(GetBoringGREASEValue(uconn.greaseSeed, ssl_grease_group))
 					continue
 				}
+				if isGREASECurve(curveID) {
+					continue
+				}
 				if len(ext.KeyShares[i].Data) > 1 {
 					continue
 				}
